@@ -15,6 +15,7 @@ import uvicorn
 
 from app.api import admin_api_router, mobile_api_router
 from app.api.errors import register_error_handlers
+from app.api.upload_limit import PhotoUploadSizeLimit
 from app.models import LOOPBACK_HOSTS, ServerSettings, create_session_factory, load_settings
 from app.services import ensure_storage_dirs
 
@@ -64,6 +65,8 @@ def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
     )
     _configure_state(admin, cfg, default_actor="admin", phone_only=False)
     register_error_handlers(admin)
+    # 나중에 넣은 미들웨어가 바깥 — 루프백 검사가 먼저, 그다음 사진 본문 크기 제한
+    admin.add_middleware(PhotoUploadSizeLimit)
     admin.add_middleware(LoopbackOnlyMiddleware)
     admin.include_router(admin_api_router)
 
@@ -112,6 +115,7 @@ def create_mobile_app(settings: ServerSettings | None = None) -> FastAPI:
     _configure_state(mobile, cfg, default_actor="anonymous", phone_only=True)
     register_error_handlers(mobile)
     mobile.include_router(mobile_api_router)
+    mobile.add_middleware(PhotoUploadSizeLimit)
 
     mobile_static = cfg.static_dir / "mobile"
     if mobile_static.is_dir():
