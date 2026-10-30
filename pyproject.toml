@@ -16,6 +16,7 @@ dependencies = [
     "pydantic>=2.6.0",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0.0",
+    "segno>=1.6.0",
 ]
 
 [project.optional-dependencies]
