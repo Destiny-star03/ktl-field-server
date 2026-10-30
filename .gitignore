@@ -4,6 +4,19 @@ samples/
 견본/
 storage/
 *.local.*
+# 사진 업로드를 손으로 시험하다 남긴 사진이 커밋되지 않게 (data-guard와 같은 기준: synthetic/ · docs/images/ · assets/만 허용)
+*.jpg
+*.jpeg
+*.png
+*.heic
+*.heif
+*.webp
+*.bmp
+*.tif
+*.tiff
+!**/synthetic/**
+!docs/images/**
+!assets/**
 
 # Python
 __pycache__/
