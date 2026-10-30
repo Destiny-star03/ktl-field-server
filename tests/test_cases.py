@@ -32,6 +32,11 @@ def clients(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[T
     with TestClient(create_mobile_app(settings)) as mobile, TestClient(
         create_admin_app(settings), client=("127.0.0.1", 50000), headers=ADMIN_HEADERS
     ) as admin:
+        # REQ-B1-10: 휴대폰 업무 API는 단말 등록 + 시험자 로그인 후에만 쓸 수 있다
+        code = admin.post("/api/admin/v1/pair-codes").json()["code"]
+        mobile.post("/api/v1/clients/pair", json={"pair_code": code, "device_name": "테스트폰"})
+        tester = admin.post("/api/admin/v1/testers", json={"name": "시험자A", "pin": "1234"}).json()
+        mobile.post("/api/v1/sessions", json={"tester_id": tester["id"], "pin": "1234"})
         yield mobile, admin
 
 
@@ -59,7 +64,7 @@ def test_create_case_matches_contract(clients: tuple[TestClient, TestClient]) ->
     assert body["unit_count"] == 2
     assert body["status"] == "open"
     assert body["options"] == {"flowmeter_type": "defender"}
-    assert isinstance(body["created_by"], str)
+    assert body["created_by"] == "ts_1"  # 로그인한 시험자
     assert ISO_WITH_OFFSET.match(body["created_at"])
     assert body["updated_at"] == body["created_at"]
     assert body["progress"] == {"total": 6, "confirmed": 0, "needs_check": 0}
