@@ -12,8 +12,10 @@ from app.api.errors import not_found, validation_error
 from app.api.schemas import Case, CaseCreate, CaseSummary, ItemStatus, Progress, Unit, UnitItem
 from app.models import Case as CaseRow
 from app.models import local_now, to_iso
+from app.models.photos import Photo as PhotoRow
 
 CASE_ID_PREFIX = "case_"
+PHOTO_ID_PREFIX = "ph_"
 _CASE_ID_RE = re.compile(r"^case_([1-9]\d{0,17})$")
 
 # (unit_index, item_key) → (photo_id, 칸 상태)
@@ -23,6 +25,10 @@ CategoryLookup = Callable[[str], Mapping[str, Any] | None]
 
 def format_case_id(pk: int) -> str:
     return f"{CASE_ID_PREFIX}{pk}"
+
+
+def format_photo_id(pk: int) -> str:
+    return f"{PHOTO_ID_PREFIX}{pk}"
 
 
 def parse_case_id(case_id: str) -> int:
@@ -83,13 +89,23 @@ def compute_progress(units: list[Unit]) -> Progress:
     )
 
 
-def _photo_slots(_db: Session, _row: CaseRow) -> dict[tuple[int, str], tuple[str, ItemStatus]]:
-    """건에 올라온 사진의 칸별 상태.
-
-    사진 테이블은 사진 업로드 이슈(REQ-B1-03)에서 생긴다. 그때 칸마다 최신(deleted 아닌) 사진을 골라
-    `item_status(photo.status, [v.status for v in photo.values])`로 채운다. 지금은 사진이 없으므로 모두 empty.
-    """
-    return {}
+def _photo_slots(db: Session, case_ids: list[int]) -> dict[int, dict[tuple[int, str], tuple[str, ItemStatus]]]:
+    """건별로 올라온 사진의 칸별 상태 — 칸마다 최신(deleted 아닌) 사진 하나. 여러 건을 쿼리 한 번에."""
+    result: dict[int, dict[tuple[int, str], tuple[str, ItemStatus]]] = {pk: {} for pk in case_ids}
+    if not case_ids:
+        return result
+    photos = db.scalars(
+        select(PhotoRow)
+        .where(PhotoRow.case_id.in_(case_ids), PhotoRow.status != "deleted")
+        .order_by(PhotoRow.id)
+    )
+    for photo in photos:  # id 오름차순이므로 칸마다 마지막 사진이 남는다
+        statuses = [str(v.get("status")) for v in photo.values or []]
+        result[photo.case_id][(photo.unit_index, photo.item_key)] = (
+            format_photo_id(photo.id),
+            item_status(photo.status, statuses),
+        )
+    return result
 
 
 def _validate_create(body: CaseCreate, category: Mapping[str, Any] | None, phone_only: bool) -> None:
@@ -155,7 +171,7 @@ def get_case(db: Session, case_id: str, category_lookup: CategoryLookup) -> Case
     row = db.get(CaseRow, parse_case_id(case_id))
     if row is None:
         raise not_found("접수 건을 찾을 수 없습니다.")
-    units = build_units(category_lookup(row.category), row.unit_count, _photo_slots(db, row))
+    units = build_units(category_lookup(row.category), row.unit_count, _photo_slots(db, [row.id])[row.id])
     return to_case(row, units)
 
 
@@ -182,8 +198,9 @@ def list_cases(
     rows = list(db.scalars(stmt.limit(limit + 1)))
     has_more = len(rows) > limit
     rows = rows[:limit]
+    slots = _photo_slots(db, [row.id for row in rows])
     items = [
-        to_summary(row, build_units(category_lookup(row.category), row.unit_count, _photo_slots(db, row)))
+        to_summary(row, build_units(category_lookup(row.category), row.unit_count, slots[row.id]))
         for row in rows
     ]
     next_cursor = format_case_id(rows[-1].id) if has_more and rows else None

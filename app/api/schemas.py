@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 CaseStatus = Literal["open", "completed"]
 ItemStatus = Literal["empty", "queued", "reading", "done", "needs_check", "confirmed", "failed"]
@@ -80,3 +80,43 @@ class Case(CaseSummary):
 class CaseList(BaseModel):
     items: list[CaseSummary]
     next_cursor: str | None
+
+
+PhotoStatus = Literal["queued", "reading", "done", "failed", "deleted"]
+ValueStatus = Literal["auto", "needs_check", "confirmed", "edited"]
+
+
+class Value(BaseModel):
+    key: str = Field(examples=["flow"])
+    label: str = Field(examples=["유량"])
+    value: str = Field(examples=["1.002"])
+    unit: str | None = None
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
+    status: ValueStatus
+    confirmed_by: str | None = None
+    confirmed_at: str | None = Field(default=None, json_schema_extra={"format": "date-time"})
+
+
+class PhotoWarning(BaseModel):
+    model_config = ConfigDict(title="Warning")  # 계약 스키마 이름 그대로, 파이썬 내장 Warning은 가리지 않게
+
+    code: str = Field(examples=["PRE_MEASURE_SCREEN"])
+    message: str
+
+
+class Photo(BaseModel):
+    id: str = Field(examples=["ph_301"])
+    case_id: str
+    unit_index: int
+    item_key: str
+    reader: str
+    status: PhotoStatus
+    sha256: str
+    stored_name: str = Field(examples=["20261029_091102_prec_1.jpg"])
+    uploaded_by: str
+    uploaded_at: str = Field(json_schema_extra={"format": "date-time"})
+    values: list[Value]
+    warnings: list[PhotoWarning]
+    error: str | None
+    read_ms: int | None
