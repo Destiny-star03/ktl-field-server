@@ -1,7 +1,10 @@
-"""categories.yaml 기준 Reader/Selector 모듈 로더."""
+"""categories.yaml 기준 Reader/Selector 모듈 로더 (REQ-B1-05)."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+import importlib
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +37,11 @@ except ModuleNotFoundError:  # pragma: no cover - ktl-contract 미설치 클린 
 _EMPTY_CATEGORIES: dict[str, Any] = {"version": 1, "categories": []}
 _cache: dict[Path, tuple[float, dict[str, Any]]] = {}
 
+# KTL_MODULES: "auto"(기본) = ktl_readers/ktl_selectors가 설치돼 있으면 그쪽 get_reader/get_selector,
+#              없으면 ktl_contract.fakes. "fake" = 항상 가짜 모듈 (관문 2 · 테스트용).
+MODULES_MODE_ENV = "KTL_MODULES"
+NO_READER = "none"  # categories.yaml에서 판독하지 않는 촬영 항목 (예: 형식승인표)
+
 
 def load_categories(yaml_path: Path | None = None) -> dict[str, Any]:
     """categories.yaml 파일을 읽어 파싱된 딕셔너리를 반환한다.
@@ -65,11 +73,64 @@ def find_category(name: str, yaml_path: Path | None = None) -> dict[str, Any] | 
     return None
 
 
+def reader_name_for_item(category: Mapping[str, Any], item_key: str) -> str | None:
+    """분류의 촬영 항목 key → Reader 이름. `reader: none`이거나 없는 항목이면 None (판독 안 함)."""
+    for item in category.get("items") or []:
+        if item.get("key") == item_key:
+            name = item.get("reader")
+            return None if not name or name == NO_READER else str(name)
+    return None
+
+
+def reader_names(categories: Mapping[str, Any]) -> list[str]:
+    """categories.yaml에 나오는 Reader 이름 전체 (판독 작업 프로세스가 미리 만들어 둘 목록)."""
+    names: list[str] = []
+    for category in categories.get("categories") or []:
+        for item in category.get("items") or []:
+            name = item.get("reader")
+            if name and name != NO_READER and name not in names:
+                names.append(str(name))
+    return names
+
+
+def expected_fields(category: Mapping[str, Any], item_key: str) -> list[str]:
+    """`export`의 `항목.칸`에서 그 촬영 항목 사진이 채워야 할 칸 key 목록을 뽑는다 (02 §3.4).
+
+    모듈이 일부 칸만 돌려주면 빠진 칸은 서버가 needs_check로 채운다 (02 §3.2).
+    """
+    prefix = f"{item_key}."
+    return [col[len(prefix):] for col in category.get("export") or [] if str(col).startswith(prefix)]
+
+
+def _modules_mode() -> str:
+    return os.getenv(MODULES_MODE_ENV, "auto").strip().lower()
+
+
+def _import_optional(module_name: str) -> Any | None:
+    try:
+        return importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        if exc.name != module_name:  # 패키지는 있는데 그 안의 의존성이 없음 → 숨기지 않는다
+            raise
+        return None
+
+
 def get_reader(name: str) -> Reader:
-    """이름에 해당하는 Reader 모듈(기본: FakeReader)을 반환한다."""
+    """이름에 해당하는 Reader. ktl_readers가 있으면 그 get_reader(아직 없는 Reader는 가짜로 대체), 없으면 FakeReader.
+
+    무거운 OCR 의존성이 서버 프로세스에 올라오지 않도록 판독 작업 프로세스 안에서만 부른다.
+    """
+    if _modules_mode() != "fake":
+        readers = _import_optional("ktl_readers")
+        if readers is not None:
+            return readers.get_reader(name)
     return FakeReader(name=name)
 
 
 def get_selector(name: str) -> Selector:
-    """이름에 해당하는 Selector 모듈(기본: FakeSelector)을 반환한다."""
+    """이름에 해당하는 Selector. ktl_selectors가 있으면 그 get_selector, 없으면 FakeSelector."""
+    if _modules_mode() != "fake":
+        selectors = _import_optional("ktl_selectors")
+        if selectors is not None:
+            return selectors.get_selector(name)
     return FakeSelector(name=name)
