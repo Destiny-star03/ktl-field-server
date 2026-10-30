@@ -16,7 +16,9 @@ import uvicorn
 from app.api import admin_api_router, mobile_api_router
 from app.api.errors import register_error_handlers
 from app.models import LOOPBACK_HOSTS, ServerSettings, create_session_factory, load_settings
+from app.modules import load_categories, reader_names
 from app.services import ensure_storage_dirs
+from app.worker import ReadQueue
 
 
 class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
@@ -53,8 +55,13 @@ def _configure_state(app: FastAPI, cfg: ServerSettings, *, default_actor: str, p
     app.state.phone_only = phone_only
 
 
-def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
-    """관리 전용 FastAPI 앱(127.0.0.1:8766)을 생성한다."""
+def create_read_queue() -> ReadQueue:
+    """판독 작업 큐(REQ-B1-04). categories.yaml의 Reader들을 작업 프로세스에 미리 올린다."""
+    return ReadQueue(preload=reader_names(load_categories()))
+
+
+def create_admin_app(settings: ServerSettings | None = None, read_queue: ReadQueue | None = None) -> FastAPI:
+    """관리 전용 FastAPI 앱(127.0.0.1:8766)을 생성한다. read_queue는 휴대폰 앱과 같은 큐를 공유한다."""
     cfg = settings or load_settings()
     admin = FastAPI(
         title="KTL Field Server - Admin API",
@@ -64,6 +71,7 @@ def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
     )
     _configure_state(admin, cfg, default_actor="admin", phone_only=False)
     register_error_handlers(admin)
+    admin.state.read_queue = read_queue
     admin.add_middleware(LoopbackOnlyMiddleware)
     admin.include_router(admin_api_router)
 
@@ -73,20 +81,25 @@ def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
     return admin
 
 
-def create_mobile_app(settings: ServerSettings | None = None) -> FastAPI:
-    """휴대폰 전용 FastAPI 앱(:8765)을 생성한다."""
+def create_mobile_app(settings: ServerSettings | None = None, read_queue: ReadQueue | None = None) -> FastAPI:
+    """휴대폰 전용 FastAPI 앱(:8765)을 생성한다. read_queue를 주지 않으면 앱 수명 동안 큐를 직접 띄운다."""
     cfg = settings or load_settings()
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
         ensure_storage_dirs(cfg.storage_dir)
 
+        owned_queue = read_queue is None
+        active_queue = read_queue or create_read_queue()
+        _app.state.read_queue = active_queue
+        active_queue.start()
+
         admin_server: uvicorn.Server | None = None
         admin_task: asyncio.Task[None] | None = None
 
         if os.getenv("KTL_ADMIN_SIDECAR", "1") == "1":
             admin_config = uvicorn.Config(
-                create_admin_app(cfg),
+                create_admin_app(cfg, active_queue),
                 host=cfg.admin_host,
                 port=cfg.admin_port,
                 log_level="info",
@@ -100,6 +113,8 @@ def create_mobile_app(settings: ServerSettings | None = None) -> FastAPI:
             if admin_server is not None and admin_task is not None:
                 admin_server.should_exit = True
                 await admin_task
+            if owned_queue:
+                await asyncio.to_thread(active_queue.stop)
 
     mobile = FastAPI(
         title="KTL Field Server - Mobile API",
@@ -130,13 +145,18 @@ async def serve_both(settings: ServerSettings | None = None) -> None:
     os.environ["KTL_ADMIN_SIDECAR"] = "0"
     ensure_storage_dirs(cfg.storage_dir)
 
+    read_queue = create_read_queue()
+    read_queue.start()
     mobile_server = uvicorn.Server(
-        uvicorn.Config(create_mobile_app(cfg), host=cfg.mobile_host, port=cfg.mobile_port)
+        uvicorn.Config(create_mobile_app(cfg, read_queue), host=cfg.mobile_host, port=cfg.mobile_port)
     )
     admin_server = uvicorn.Server(
-        uvicorn.Config(create_admin_app(cfg), host=cfg.admin_host, port=cfg.admin_port)
+        uvicorn.Config(create_admin_app(cfg, read_queue), host=cfg.admin_host, port=cfg.admin_port)
     )
-    await asyncio.gather(mobile_server.serve(), admin_server.serve())
+    try:
+        await asyncio.gather(mobile_server.serve(), admin_server.serve())
+    finally:
+        await asyncio.to_thread(read_queue.stop)
 
 
 if __name__ == "__main__":

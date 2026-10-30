@@ -34,6 +34,7 @@ pip install -e "git+https://github.com/YC-Dr-link/ktl-field-modules#egg=ktl-read
 pip install -e "git+https://github.com/YC-Dr-link/ktl-field-modules#egg=ktl-selectors&subdirectory=selection"
 ```
 처음에는 `ktl_contract.fakes`의 가짜 모듈로 끝까지 동작시키는 것이 목표(관문 2).
+`ktl_readers`가 설치돼 있으면 그 `get_reader`를 쓰고(아직 없는 Reader는 가짜로 대체), 없으면 가짜 모듈을 쓴다. `KTL_MODULES=fake`면 항상 가짜 모듈.
 
 ## 실행
 
