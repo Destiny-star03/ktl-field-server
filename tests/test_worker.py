@@ -47,6 +47,10 @@ class Recorder:
     def statuses(self, photo_id: str) -> list[str]:
         return [e.status for e in self.events if e.photo_id == photo_id]
 
+    def wait_status(self, photo_id: str, status: str, timeout: float = 30) -> None:
+        with self._cond:
+            assert self._cond.wait_for(lambda: status in self.statuses(photo_id), timeout), f"{photo_id} {status} 안 옴"
+
     def wait(self, photo_id: str, timeout: float = 30) -> ReadOutcome:
         def final() -> ReadOutcome | None:
             return next((e for e in self.events if e.photo_id == photo_id and e.status in ("done", "failed")), None)
@@ -207,13 +211,22 @@ def test_timeout_only_that_photo_and_server_keeps_working(
 
 STUB_READERS = '''
 import os
+import time
 from ktl_contract import ReadResult, Value
 
 class _Broken:
     def __init__(self, name):
+        if name == "dies_on_load":
+            os._exit(4)
         self.name = name
 
     def read(self, image_path, item):
+        if item == "numpy":
+            import numpy as np
+            return ReadResult(values=[Value(key="flow", label="유량", value="1.000",
+                                            confidence=np.float32(0.9), bbox=[np.int64(n) for n in (1, 2, 3, 4)])])
+        if item == "sleep":
+            time.sleep(1.5)
         if item == "boom":
             raise ValueError("모듈 버그")
         if item == "crash":
@@ -227,31 +240,74 @@ def get_reader(name):
 '''
 
 
-def test_module_bugs_and_crash_marks_only_that_photo(
-    monkeypatch: pytest.MonkeyPatch, recorder: Recorder, tmp_path: Path
-) -> None:
-    """ReadError가 아닌 예외 · 결과 형식 오류 · 프로세스 강제 종료도 그 사진만 failed."""
+@pytest.fixture
+def stub_readers(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """일부러 고장 낸 ktl_readers를 작업 프로세스가 불러오게 한다."""
     stub_dir = tmp_path / "stub"
     (stub_dir / "ktl_readers").mkdir(parents=True)
     (stub_dir / "ktl_readers" / "__init__.py").write_text(textwrap.dedent(STUB_READERS), encoding="utf-8")
     monkeypatch.syspath_prepend(str(stub_dir))  # spawn 작업 프로세스는 sys.path를 물려받는다
     monkeypatch.setenv("KTL_MODULES", "auto")
 
-    q = ReadQueue(workers=1, timeout=5)
+
+def run_stub(recorder: Recorder, tmp_path: Path, items: list[str], preload: list[str] | None = None) -> list[ReadOutcome]:
+    q = ReadQueue(workers=1, timeout=5, preload=preload)
     q.subscribe(recorder)
     q.start()
     try:
         photo = make_photo(tmp_path / "img", "ph.jpg")
-        for item in ("boom", "badtype", "crash", "ok"):
+        for item in items:
             q.submit(ReadJob(f"ph_{item}", photo, item, "stub"))
-        boom, badtype, crash, ok = (recorder.wait(f"ph_{i}") for i in ("boom", "badtype", "crash", "ok"))
+        return [recorder.wait(f"ph_{i}") for i in items]
     finally:
         q.stop()
+
+
+def test_module_bugs_and_crash_marks_only_that_photo(stub_readers: None, recorder: Recorder, tmp_path: Path) -> None:
+    """ReadError가 아닌 예외 · 결과 형식 오류 · 프로세스 강제 종료도 그 사진만 failed."""
+    boom, badtype, crash, ok = run_stub(recorder, tmp_path, ["boom", "badtype", "crash", "ok"])
 
     assert boom.status == "failed" and "ValueError" in (boom.error or "")
     assert badtype.status == "failed" and "형식 오류" in (badtype.error or "")
     assert crash.status == "failed" and crash.error == CRASH_MESSAGE
     assert ok.status == "done" and ok.values[0]["value"] == "2.000"  # 죽은 뒤 새 프로세스로 계속
+
+
+def test_worker_dying_on_startup_does_not_leave_photo_reading(
+    stub_readers: None, recorder: Recorder, tmp_path: Path
+) -> None:
+    """작업 프로세스가 Reader를 만들다 죽어도 사진이 reading에 멈추지 않고 failed가 된다."""
+    (outcome,) = run_stub(recorder, tmp_path, ["ok"], preload=["dies_on_load"])
+    assert outcome.status == "failed" and "시작하지 못했습니다" in (outcome.error or "")
+
+
+def test_numpy_numbers_from_module_are_accepted(stub_readers: None, recorder: Recorder, tmp_path: Path) -> None:
+    """실제 OCR 모듈이 흔히 내는 np.float32 신뢰도 · np.int64 bbox도 기본 타입으로 바꿔 받는다."""
+    pytest.importorskip("numpy")
+    (outcome,) = run_stub(recorder, tmp_path, ["numpy"])
+    assert outcome.status == "done", outcome.error
+    value = outcome.values[0]
+    assert type(value["confidence"]) is float
+    assert value["bbox"] == [1, 2, 3, 4] and all(type(n) is int for n in value["bbox"])
+
+
+def test_stop_leaves_unstarted_photos_queued(stub_readers: None, recorder: Recorder, tmp_path: Path) -> None:
+    """끝낼 때 판독 중인 사진만 마저 끝내고, 남은 사진은 처리하지 않는다 (종료가 N×10초로 늘지 않게)."""
+    q = ReadQueue(workers=1, timeout=5)
+    q.subscribe(recorder)
+    q.start()
+    photo = make_photo(tmp_path / "img", "ph.jpg")
+    for photo_id in ("ph_first", "ph_rest_0", "ph_rest_1"):
+        q.submit(ReadJob(photo_id, photo, "sleep", "stub"))
+    recorder.wait_status("ph_first", "reading")
+    q.stop()
+    assert recorder.statuses("ph_first") == ["reading", "done"]
+    assert recorder.statuses("ph_rest_0") == recorder.statuses("ph_rest_1") == []
+
+
+def test_zero_workers_setting_still_runs_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KTL_READ_WORKERS", "0")
+    assert ReadQueue().workers == 1
 
 
 def test_app_lifespan_owns_read_queue(fake_modules: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

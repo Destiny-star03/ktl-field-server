@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+import logging
 import os
 
 from fastapi import FastAPI, Request
@@ -19,6 +20,8 @@ from app.models import LOOPBACK_HOSTS, ServerSettings, create_session_factory, l
 from app.modules import load_categories, reader_names
 from app.services import ensure_storage_dirs
 from app.worker import ReadQueue
+
+logger = logging.getLogger(__name__)
 
 
 class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
@@ -57,7 +60,12 @@ def _configure_state(app: FastAPI, cfg: ServerSettings, *, default_actor: str, p
 
 def create_read_queue() -> ReadQueue:
     """판독 작업 큐(REQ-B1-04). categories.yaml의 Reader들을 작업 프로세스에 미리 올린다."""
-    return ReadQueue(preload=reader_names(load_categories()))
+    try:
+        preload = reader_names(load_categories())
+    except Exception:  # noqa: BLE001 - 미리 올리기는 최적화일 뿐, 분류 파일 문제로 서버가 안 뜨면 안 된다
+        logger.exception("categories.yaml을 읽지 못해 Reader를 미리 올리지 않습니다")
+        preload = []
+    return ReadQueue(preload=preload)
 
 
 def create_admin_app(settings: ServerSettings | None = None, read_queue: ReadQueue | None = None) -> FastAPI:

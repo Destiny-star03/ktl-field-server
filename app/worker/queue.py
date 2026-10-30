@@ -79,7 +79,11 @@ class _WorkerProcess:
         proc.start()
         child.close()
         self._proc, self._conn = proc, parent
-        if not parent.poll(self._startup_timeout) or parent.recv() != READY:
+        try:
+            ready = parent.poll(self._startup_timeout) and parent.recv() == READY
+        except (EOFError, OSError):  # 시작 중에 죽음 (모듈 import 오류 · 네이티브 라이브러리 충돌 등)
+            ready = False
+        if not ready:
             self.kill()
             raise RuntimeError("판독 작업 프로세스를 시작하지 못했습니다")
         return parent
@@ -120,13 +124,14 @@ class ReadQueue:
         startup_timeout: float = STARTUP_TIMEOUT_SECONDS,
         preload: list[str] | None = None,
     ) -> None:
-        self.workers = workers or int(os.getenv("KTL_READ_WORKERS", str(DEFAULT_WORKERS)))
+        self.workers = max(1, workers or int(os.getenv("KTL_READ_WORKERS", str(DEFAULT_WORKERS))))
         self.timeout = timeout
         self._startup_timeout = startup_timeout
         self._preload = list(preload or [])
         self._ctx = mp.get_context("spawn")  # 스레드가 있는 서버에서 fork는 위험 · Windows와 동작을 맞춘다
         self._jobs: queue.Queue[ReadJob | None] = queue.Queue()
         self._listeners: list[Listener] = []
+        self._stopping = threading.Event()
         self._threads: list[threading.Thread] = []
         self._procs: list[_WorkerProcess] = []
 
@@ -136,6 +141,7 @@ class ReadQueue:
     def start(self) -> None:
         if self._threads:
             return
+        self._stopping.clear()
         for i in range(self.workers):
             proc = _WorkerProcess(self._ctx, self._preload, self._startup_timeout)
             t = threading.Thread(target=self._loop, args=(proc,), name=f"ktl-read-{i}", daemon=True)
@@ -144,6 +150,8 @@ class ReadQueue:
             t.start()
 
     def stop(self) -> None:
+        """끝낸다. 판독 중인 사진은 마저 끝내고, 아직 시작 안 한 사진은 queued로 남긴다 (재시작 시 다시 넣기: #4)."""
+        self._stopping.set()
         for _ in self._threads:
             self._jobs.put(None)
         for t in self._threads:
@@ -166,13 +174,16 @@ class ReadQueue:
     def _loop(self, proc: _WorkerProcess) -> None:
         while True:
             job = self._jobs.get()
-            if job is None:
+            if job is None or self._stopping.is_set():
                 return
+            self._emit(job, ReadOutcome(job.photo_id, "reading"))
             try:
-                self._emit(job, ReadOutcome(job.photo_id, "reading"))
-                self._emit(job, self._read(proc, job))
-            except Exception:  # noqa: BLE001 - 감독 스레드는 어떤 경우에도 살아 있어야 한다
+                outcome = self._read(proc, job)
+            except Exception:  # noqa: BLE001 - 감독 스레드는 어떤 경우에도 살아 있어야 하고, 사진이 reading에 멈추면 안 된다
                 logger.exception("판독 작업 처리 중 오류: %s", job.photo_id)
+                proc.kill()
+                outcome = ReadOutcome(job.photo_id, "failed", error=CRASH_MESSAGE)
+            self._emit(job, outcome)
 
     def _read(self, proc: _WorkerProcess, job: ReadJob) -> ReadOutcome:
         try:
@@ -183,7 +194,7 @@ class ReadQueue:
         try:
             conn.send({"reader": job.reader, "image_path": job.image_path, "item_key": job.item_key})
             if not conn.poll(self.timeout):
-                logger.warning("판독 10초 초과로 작업 프로세스 종료: %s (pid %s)", job.photo_id, proc.pid)
+                logger.warning("판독 %.0f초 초과로 작업 프로세스 종료: %s (pid %s)", self.timeout, job.photo_id, proc.pid)
                 proc.kill()
                 return ReadOutcome(job.photo_id, "failed", error=TIMEOUT_MESSAGE, read_ms=_ms(start))
             reply = conn.recv()

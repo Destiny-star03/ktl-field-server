@@ -4,26 +4,44 @@
 """
 from __future__ import annotations
 
-from dataclasses import asdict
 from multiprocessing.connection import Connection
+from numbers import Integral, Real
 import time
 from typing import Any
 
 READY = "ready"
 
 
-def _check_result(result: Any) -> str | None:
-    """ReadResult 모양 검사. 문제가 있으면 이유(한국어), 없으면 None."""
-    values = getattr(result, "values", None)
-    if not isinstance(values, list):
-        return "판독 모듈 결과 형식 오류: values가 목록이 아닙니다"
-    for v in values:
-        if not isinstance(getattr(v, "key", None), str) or not isinstance(getattr(v, "value", None), str):
-            return "판독 모듈 결과 형식 오류: key·value는 문자열이어야 합니다"
-        confidence = getattr(v, "confidence", None)
-        if not isinstance(confidence, (int, float)) or not 0.0 <= confidence <= 1.0:
-            return f"판독 모듈 결과 형식 오류: {v.key} 신뢰도는 0~1이어야 합니다"
-    return None
+class _BadResult(Exception):
+    """모듈 결과가 계약(02 §3.1) 모양이 아님."""
+
+
+def _plain_value(v: Any) -> dict[str, Any]:
+    """Value → 기본 타입 dict. numpy 숫자(np.float32 신뢰도 · np.int64 bbox)도 float/int로 바꾼다
+    (서버 프로세스가 numpy 없이 받을 수 있게)."""
+    key, value, unit = getattr(v, "key", None), getattr(v, "value", None), getattr(v, "unit", None)
+    if not isinstance(key, str) or not isinstance(value, str):
+        raise _BadResult("key·value는 문자열이어야 합니다")
+    confidence = getattr(v, "confidence", 1.0)
+    if not isinstance(confidence, Real) or not 0.0 <= float(confidence) <= 1.0:
+        raise _BadResult(f"{key} 신뢰도는 0~1이어야 합니다")
+    bbox = getattr(v, "bbox", None)
+    if bbox is not None:
+        if len(bbox) != 4 or not all(isinstance(n, Integral) for n in bbox):
+            raise _BadResult(f"{key} bbox는 정수 4개여야 합니다")
+        bbox = [int(n) for n in bbox]
+    return {"key": key, "label": str(getattr(v, "label", "") or key), "value": value,
+            "unit": None if unit is None else str(unit), "confidence": float(confidence), "bbox": bbox}
+
+
+def _plain_result(result: Any) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    values, warnings = getattr(result, "values", None), getattr(result, "warnings", [])
+    if not isinstance(values, list) or not isinstance(warnings, list):
+        raise _BadResult("values·warnings는 목록이어야 합니다")
+    return (
+        [_plain_value(v) for v in values],
+        [{"code": str(w.code), "message": str(w.message)} for w in warnings],
+    )
 
 
 def read_one(readers: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
@@ -37,16 +55,10 @@ def read_one(readers: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
         name = job["reader"]
         if name not in readers:
             readers[name] = get_reader(name)
-        result = readers[name].read(job["image_path"], job["item_key"])
-        problem = _check_result(result)
-        if problem is not None:
-            return {"ok": False, "error": problem, "read_ms": _elapsed_ms(start)}
-        return {
-            "ok": True,
-            "values": [asdict(v) for v in result.values],
-            "warnings": [asdict(w) for w in result.warnings],
-            "read_ms": _elapsed_ms(start),
-        }
+        values, warnings = _plain_result(readers[name].read(job["image_path"], job["item_key"]))
+        return {"ok": True, "values": values, "warnings": warnings, "read_ms": _elapsed_ms(start)}
+    except _BadResult as exc:
+        return {"ok": False, "error": f"판독 모듈 결과 형식 오류: {exc}", "read_ms": _elapsed_ms(start)}
     except ReadError as exc:
         return {"ok": False, "error": str(exc) or "사진을 읽지 못했습니다", "read_ms": _elapsed_ms(start)}
     except Exception as exc:  # noqa: BLE001 - 모듈 버그가 서버로 번지지 않게 전부 잡는다
