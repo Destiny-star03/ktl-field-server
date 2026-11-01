@@ -42,3 +42,4 @@ pip install -e ".[dev]"
 alembic upgrade head
 uvicorn app.main:app --host 0.0.0.0 --port 8765
 ```
+`categories.yaml`은 위 모듈 설치 위치(`src/ktl-contract/`)에서 읽는다. 다른 곳이면 `KTL_CATEGORIES_PATH`로 지정.

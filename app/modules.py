@@ -1,10 +1,15 @@
 """categories.yaml 기준 Reader/Selector 모듈 로더."""
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from app.models import load_settings
+
+logger = logging.getLogger(__name__)
 
 try:
     from ktl_contract import Reader, Selector
@@ -26,17 +31,38 @@ except ModuleNotFoundError:  # pragma: no cover - ktl-contract 미설치 클린 
             self.name = name
 
 
+_EMPTY_CATEGORIES: dict[str, Any] = {"version": 1, "categories": []}
+_cache: dict[Path, tuple[float, dict[str, Any]]] = {}
+
+
 def load_categories(yaml_path: Path | None = None) -> dict[str, Any]:
-    """categories.yaml 파일을 읽어 파싱된 딕셔너리를 반환한다."""
-    if yaml_path is None:
-        # TODO(확인 필요): 배포 시 categories.yaml 패키지 리소스 경로 확정 필요
-        candidate = Path(__file__).resolve().parent.parent / "src" / "ktl-contract" / "categories.yaml"
-        if not candidate.is_file():
-            return {"version": 1, "categories": []}
-        yaml_path = candidate
-    with open(yaml_path, encoding="utf-8") as f:
+    """categories.yaml 파일을 읽어 파싱된 딕셔너리를 반환한다.
+
+    파일 수정 시각이 바뀌면 다시 읽는다 (칸 매핑은 이 파일만 고쳐서 바꾼다 — 02 §3.4).
+    """
+    path = (yaml_path or load_settings().categories_path).resolve()
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        logger.warning("categories.yaml을 찾을 수 없습니다: %s (KTL_CATEGORIES_PATH로 지정)", path)
+        return _EMPTY_CATEGORIES
+    cached = _cache.get(path)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    with open(path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
-    return data if isinstance(data, dict) else {"version": 1, "categories": []}
+    if not isinstance(data, dict) or not isinstance(data.get("categories"), list):
+        raise ValueError(f"categories.yaml 형식 오류: {path}")
+    _cache[path] = (mtime, data)
+    return data
+
+
+def find_category(name: str, yaml_path: Path | None = None) -> dict[str, Any] | None:
+    """분류 key(`sampling` 등)에 해당하는 categories.yaml 항목을 찾는다."""
+    for category in load_categories(yaml_path)["categories"]:
+        if category.get("category") == name:
+            return category
+    return None
 
 
 def get_reader(name: str) -> Reader:

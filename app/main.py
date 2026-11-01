@@ -14,7 +14,8 @@ from starlette.responses import Response
 import uvicorn
 
 from app.api import admin_api_router, mobile_api_router
-from app.models import LOOPBACK_HOSTS, ServerSettings, load_settings
+from app.api.errors import register_error_handlers
+from app.models import LOOPBACK_HOSTS, ServerSettings, create_session_factory, load_settings
 from app.services import ensure_storage_dirs
 
 
@@ -44,6 +45,14 @@ class LoopbackOnlyMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
+def _configure_state(app: FastAPI, cfg: ServerSettings, *, default_actor: str, phone_only: bool) -> None:
+    """라우터가 의존성으로 꺼내 쓰는 앱별 설정·DB 세션 팩토리를 둔다."""
+    app.state.settings = cfg
+    app.state.session_factory = create_session_factory(cfg.database_url)
+    app.state.default_actor = default_actor
+    app.state.phone_only = phone_only
+
+
 def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
     """관리 전용 FastAPI 앱(127.0.0.1:8766)을 생성한다."""
     cfg = settings or load_settings()
@@ -53,6 +62,8 @@ def create_admin_app(settings: ServerSettings | None = None) -> FastAPI:
         docs_url="/docs",
         openapi_url="/openapi.json",
     )
+    _configure_state(admin, cfg, default_actor="admin", phone_only=False)
+    register_error_handlers(admin)
     admin.add_middleware(LoopbackOnlyMiddleware)
     admin.include_router(admin_api_router)
 
@@ -68,17 +79,16 @@ def create_mobile_app(settings: ServerSettings | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        active_cfg = settings or load_settings()
-        ensure_storage_dirs(active_cfg.storage_dir)
+        ensure_storage_dirs(cfg.storage_dir)
 
         admin_server: uvicorn.Server | None = None
         admin_task: asyncio.Task[None] | None = None
 
         if os.getenv("KTL_ADMIN_SIDECAR", "1") == "1":
             admin_config = uvicorn.Config(
-                create_admin_app(active_cfg),
-                host=active_cfg.admin_host,
-                port=active_cfg.admin_port,
+                create_admin_app(cfg),
+                host=cfg.admin_host,
+                port=cfg.admin_port,
                 log_level="info",
             )
             admin_server = uvicorn.Server(admin_config)
@@ -98,6 +108,9 @@ def create_mobile_app(settings: ServerSettings | None = None) -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=_lifespan,
     )
+    # TODO(REQ-B1-10): 로그인 구현 후 created_by 등은 세션의 시험자 ID로 바뀐다 (app/api/deps.py get_actor)
+    _configure_state(mobile, cfg, default_actor="anonymous", phone_only=True)
+    register_error_handlers(mobile)
     mobile.include_router(mobile_api_router)
 
     mobile_static = cfg.static_dir / "mobile"

@@ -12,6 +12,9 @@ __pycache__/
 venv/
 src/
 *.egg-info/
+.eggs/
+.tox/
+.nox/
 .pytest_cache/
 .coverage
 .coverage.*
@@ -20,6 +23,12 @@ htmlcov/
 .ruff_cache/
 build/
 dist/
+
+# 프론트 빌드 결과 (ktl-field-web에서 복사해 넣음) — 폴더 자리만 남긴다
+static/mobile/*
+!static/mobile/.gitkeep
+static/admin/*
+!static/admin/.gitkeep
 
 # Node
 node_modules/
@@ -32,6 +41,7 @@ coverage/
 *.sqlite3
 *.db-wal
 *.db-shm
+*.db-journal
 *.log
 
 # OS · 편집기 · AI 작업 지시서
@@ -41,12 +51,16 @@ Thumbs.db
 .vscode/
 .env
 .env.*
+!.env.example
 *.tmp
 *.bak
 *.swp
+*.orig
+*.rej
+desktop.ini
 GEMINI.md
 Gemini.md
-CLAUDE.md
+지시서-*.md
 .claude/
 .cursor/
 .gemini/

@@ -1,0 +1,19 @@
+# 테스트용 가짜 categories.yaml (형식: ktl-hub/docs/02-API명세.md §3.4). 실제 칸 매핑과 무관.
+version: 1
+categories:
+  - category: sampling
+    label: 시료채취
+    phone: true
+    options:
+      - { key: flowmeter_type, label: 기준 유량계, choices: [defender, alicat] }
+    items:
+      - { key: cert,   label: "필증 (정도검사 증명서)", reader: cert,      required: true }
+      - { key: plate,  label: "형식승인표",             reader: none,      required: true }
+      - { key: prec_1, label: "정밀오차 1",             reader: flowmeter, required: true }
+    export: [photo_first, cert.approval_no, prec_1.flow]
+  - category: gas
+    label: 가스
+    phone: false
+    selector: gas_select
+    items: []
+    export: [merge_raw]
