@@ -163,7 +163,10 @@ def test_real_parser_upload_and_series_through_worker(environment):
     assert series.json()["rows"][2][2] == 20
 
 
-def test_real_run_returns_timed_values_and_downloadable_csv(environment):
+@pytest.mark.parametrize("align,layout,column_count", [
+    ("sequence", "radon_wide_v1", 5), ("hour", "radon_hour_v1", 3), (None, "radon_hour_v1", 3),
+])
+def test_real_run_returns_timed_values_and_downloadable_csv(environment, align, layout, column_count):
     pytest.importorskip("ktl_selectors")
     client, _, _ = environment
     case_id = create_case(client)
@@ -173,15 +176,18 @@ def test_real_run_returns_timed_values_and_downloadable_csv(environment):
         uploaded = client.post(f"{PREFIX}/cases/{case_id}/files", files={"file": (name, path.read_bytes())})
         assert uploaded.status_code == 201, uploaded.text
         file_ids.append(uploaded.json()["id"])
+    options = {"reference": file_ids[0]}
+    if align is not None:
+        options["align"] = align
     response = client.post(f"{PREFIX}/cases/{case_id}/merges", json={"selector": "radon_merge", "file_ids": file_ids,
-                           "options": {"align": "sequence", "reference": file_ids[0]}})
+                           "options": options})
     assert response.status_code == 202, response.text
     result = client.get(f"{PREFIX}/merges/{response.json()['id']}").json()
     assert result["status"] == "done", result
-    assert result["meta"]["layout"] == "radon_wide_v1"
+    assert result["meta"]["layout"] == layout
     assert result["meta"]["reference_file_index"] == 1
     assert len(result["table"]["rows"]) == 13
-    assert len(result["table"]["columns"]) == 5
+    assert len(result["table"]["columns"]) == column_count
     assert [w["code"] for w in result["warnings"]] == ["DETAIL_LAYOUT"]
     exported = client.post(f"{PREFIX}/cases/{case_id}/exports", json={"kind": "merge_raw", "format": "csv", "encoding": "utf-8", "merge_id": result["id"]})
     assert exported.status_code == 202, exported.text
@@ -195,7 +201,8 @@ def test_real_run_returns_timed_values_and_downloadable_csv(environment):
     chamber, device = result["meta"]["sources"]
     assert records[0][chamber["time_column"]] == "2026-01-03 02:00:00"
     assert float(records[0][chamber["value_column"]]) == 1
-    assert records[12]["구분"] == "평균" and float(records[12][chamber["value_column"]]) == 6.5
+    assert records[12]["구분" if align == "sequence" else "측정시간"] == "평균"
+    assert float(records[12][chamber["value_column"]]) == 6.5
     assert device["model_name"] == "FRD500" and device["serial_number"] == "SYNTHETIC-TEMPERATURE"
     assert device["value_column"].endswith("Temp") and float(records[0][device["value_column"]]) == 20
     assert float(records[-1][device["value_column"]]) == 25.5
@@ -207,10 +214,10 @@ def test_real_run_failure_is_recorded_without_stopping_api(environment):
     case_id = create_case(client)
     path = CATEGORIES.parent / "radon-temperature.txt"
     file_id = client.post(f"{PREFIX}/cases/{case_id}/files", files={"file": (path.name, path.read_bytes())}).json()["id"]
-    response = client.post(f"{PREFIX}/cases/{case_id}/merges", json={"selector": "radon_merge", "file_ids": [file_id], "options": {"align": "hour"}})
+    response = client.post(f"{PREFIX}/cases/{case_id}/merges", json={"selector": "radon_merge", "file_ids": [file_id], "options": {"align": "nearest"}})
     assert response.status_code == 202
     result = client.get(f"{PREFIX}/merges/{response.json()['id']}").json()
-    assert result["status"] == "failed" and "순번" in result["error"]
+    assert result["status"] == "failed" and "hour" in result["error"]
     assert client.get(PREFIX + "/health").status_code == 200
 
 
