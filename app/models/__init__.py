@@ -153,10 +153,14 @@ def get_db(request: Request) -> Generator[Session, None, None]:
         db.close()
 
 
+from app.models.processing import ProcessingRecord  # noqa: E402 — Base 정의 후 등록
+
+
 __all__ = [
     "BASE_DIR",
     "Base",
     "Case",
+    "ProcessingRecord",
     "LOOPBACK_HOSTS",
     "ServerSettings",
     "SessionLocal",

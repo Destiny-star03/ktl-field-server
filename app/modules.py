@@ -72,4 +72,10 @@ def get_reader(name: str) -> Reader:
 
 def get_selector(name: str) -> Selector:
     """이름에 해당하는 Selector 모듈(기본: FakeSelector)을 반환한다."""
+    if name == "radon_merge":
+        try:
+            from ktl_selectors import get_selector as load_selector
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("라돈 Selector 패키지와 의존성을 설치해야 합니다.") from exc
+        return load_selector(name, fake_fallback=False)
     return FakeSelector(name=name)
