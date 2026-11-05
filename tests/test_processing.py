@@ -166,7 +166,8 @@ def test_real_parser_upload_and_series_through_worker(environment):
 @pytest.mark.parametrize("align,layout,column_count", [
     ("sequence", "radon_wide_v1", 5), ("hour", "radon_hour_v1", 3), (None, "radon_hour_v1", 3),
 ])
-def test_real_run_returns_timed_values_and_downloadable_csv(environment, align, layout, column_count):
+@pytest.mark.parametrize("encoding", ["utf-8", "cp949"])
+def test_real_run_returns_timed_values_and_downloadable_csv(environment, align, layout, column_count, encoding):
     pytest.importorskip("ktl_selectors")
     client, _, _ = environment
     case_id = create_case(client)
@@ -186,26 +187,40 @@ def test_real_run_returns_timed_values_and_downloadable_csv(environment, align, 
     assert result["status"] == "done", result
     assert result["meta"]["layout"] == layout
     assert result["meta"]["reference_file_index"] == 1
-    assert len(result["table"]["rows"]) == 13
+    assert len(result["table"]["rows"]) == 14
     assert len(result["table"]["columns"]) == column_count
     assert [w["code"] for w in result["warnings"]] == ["DETAIL_LAYOUT"]
-    exported = client.post(f"{PREFIX}/cases/{case_id}/exports", json={"kind": "merge_raw", "format": "csv", "encoding": "utf-8", "merge_id": result["id"]})
+    exported = client.post(f"{PREFIX}/cases/{case_id}/exports", json={"kind": "merge_raw", "format": "csv", "encoding": encoding, "merge_id": result["id"]})
     assert exported.status_code == 202, exported.text
     export_id = exported.json()["id"]
     status = client.get(f"{PREFIX}/exports/{export_id}").json()
-    assert status["status"] == "done" and len(status["preview"]["rows"]) == 13
+    assert status["status"] == "done" and len(status["preview"]["rows"]) == 16
     downloaded = client.get(f"{PREFIX}/exports/{export_id}/download")
     assert downloaded.status_code == 200
-    records = list(csv.DictReader(io.StringIO(downloaded.content.decode("utf-8-sig"))))
-    assert len(records) == 13
+    csv_rows = list(csv.reader(io.StringIO(downloaded.content.decode("utf-8-sig" if encoding == "utf-8" else encoding))))
+    assert csv_rows[:2] == result["meta"]["csv_header_rows"]
+    assert csv_rows[0][0] == "파일명" and csv_rows[1][0] == "S/N"
+    assert csv_rows[2] == result["table"]["columns"]
+    assert status["preview"]["columns"] == csv_rows[0]
+    assert [["" if cell is None else str(cell) for cell in row] for row in status["preview"]["rows"]] == csv_rows[1:]
+    records = [dict(zip(csv_rows[2], row)) for row in csv_rows[3:]]
+    assert len(records) == 14
     chamber, device = result["meta"]["sources"]
     assert records[0][chamber["time_column"]] == "2026-01-03 02:00:00"
     assert float(records[0][chamber["value_column"]]) == 1
     assert records[12]["구분" if align == "sequence" else "측정시간"] == "평균"
     assert float(records[12][chamber["value_column"]]) == 6.5
     assert device["model_name"] == "FRD500" and device["serial_number"] == "SYNTHETIC-TEMPERATURE"
-    assert device["value_column"] == "[2] SYNTHETIC-TEMPERATURE" and float(records[0][device["value_column"]]) == 20
-    assert float(records[-1][device["value_column"]]) == 25.5
+    assert device["value_column"] == "[2]" and float(records[0][device["value_column"]]) == 20
+    chamber_column = result["table"]["columns"].index(chamber["value_column"])
+    device_column = result["table"]["columns"].index(device["value_column"])
+    assert csv_rows[0][chamber_column] == "radon-chamber.csv" and csv_rows[1][chamber_column] == ""
+    assert csv_rows[0][device_column] == "radon-temperature.txt"
+    assert csv_rows[1][device_column] == "SYNTHETIC-TEMPERATURE"
+    assert float(records[-2][device["value_column"]]) == 25.5
+    assert records[-1]["구분" if align == "sequence" else "측정시간"] == "표준편차"
+    assert float(records[-1][device["value_column"]]) == pytest.approx(13 ** 0.5)
+    assert float(records[-1][chamber["value_column"]]) == pytest.approx(13 ** 0.5)
 
 
 def test_real_run_failure_is_recorded_without_stopping_api(environment):

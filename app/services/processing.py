@@ -152,10 +152,15 @@ def process_export(factory, export_id, storage_dir):
         try:
             merge = require_record(db, payload["merge_id"], "merge", case_id=record.case_id)
             table = merge.payload["table"]
+            header_rows = merge.payload.get("meta", {}).get("csv_header_rows", [])
+            if (not isinstance(header_rows, list) or any(not isinstance(row, list)
+                    or len(row) != len(table["columns"]) or any(not isinstance(value, str) for value in row)
+                    for row in header_rows)):
+                raise ValueError("CSV 상단 정보 행의 칼럼 수 또는 값 형식이 올바르지 않습니다.")
+            csv_rows = header_rows + [table["columns"]] + table["rows"]
             stream = io.StringIO(newline="")
             writer = csv.writer(stream, lineterminator="\r\n")
-            writer.writerow(table["columns"])
-            writer.writerows(table["rows"])
+            writer.writerows(csv_rows)
             encoding = "utf-8-sig" if payload["encoding"] == "utf-8" else "cp949"
             content = stream.getvalue().encode(encoding)
             folder = (storage_dir / "exports").resolve()
@@ -165,7 +170,7 @@ def process_export(factory, export_id, storage_dir):
             with path.open("xb") as output:
                 output.write(content)
             record.payload = {**payload, "status": "done", "file_name": name, "path": str(path),
-                              "preview": {"columns": table["columns"], "rows": table["rows"][:20]}}
+                              "preview": {"columns": csv_rows[0], "rows": csv_rows[1:21]}}
         except Exception as exc:
             record.payload = {**payload, "status": "failed", "error": str(exc)}
         db.commit()
