@@ -204,7 +204,7 @@ def test_real_run_returns_timed_values_and_downloadable_csv(environment, align, 
     assert records[12]["구분" if align == "sequence" else "측정시간"] == "평균"
     assert float(records[12][chamber["value_column"]]) == 6.5
     assert device["model_name"] == "FRD500" and device["serial_number"] == "SYNTHETIC-TEMPERATURE"
-    assert device["value_column"].endswith("Temp") and float(records[0][device["value_column"]]) == 20
+    assert device["value_column"] == "[2] SYNTHETIC-TEMPERATURE" and float(records[0][device["value_column"]]) == 20
     assert float(records[-1][device["value_column"]]) == 25.5
 
 
