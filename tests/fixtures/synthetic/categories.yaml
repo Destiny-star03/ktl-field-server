@@ -17,3 +17,9 @@ categories:
     selector: gas_select
     items: []
     export: [merge_raw]
+  - category: radon
+    label: 라돈
+    phone: false
+    selector: radon_merge
+    items: []
+    export: [merge_raw]

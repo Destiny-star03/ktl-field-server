@@ -14,6 +14,7 @@ from app.api.categories import router as categories_router
 from app.api.cases import router as cases_router
 from app.api.events import router as events_router
 from app.api.photos import router as photos_router
+from app.api.processing import router as processing_router
 
 mobile_api_router = APIRouter(prefix="/api/v1")
 mobile_api_router.include_router(auth_router)
@@ -28,5 +29,6 @@ admin_api_router.include_router(cases_router)
 admin_api_router.include_router(photos_router)
 admin_api_router.include_router(events_router)
 admin_api_router.include_router(admin_router)
+admin_api_router.include_router(processing_router)
 
 __all__ = ["admin_api_router", "mobile_api_router"]

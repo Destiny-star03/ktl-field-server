@@ -35,6 +35,35 @@ pip install -e "git+https://github.com/YC-Dr-link/ktl-field-modules#egg=ktl-sele
 ```
 처음에는 `ktl_contract.fakes`의 가짜 모듈로 끝까지 동작시키는 것이 목표(관문 2).
 
+## 라돈 파일·CSV 내보내기 API (모듈 #13 연결 작업)
+
+관리 앱에만 다음 경로를 추가했다. 기본 주소는 `http://127.0.0.1:8766/api/admin/v1`이다.
+
+| 메서드 | 경로 | 동작 |
+|---|---|---|
+| POST | `/cases/{case_id}/files` | multipart `file` 1개를 보관하고 SHA-256·판별 결과 반환 |
+| GET | `/files/{file_id}/series` | 실제 Selector의 시계열 |
+| POST | `/cases/{case_id}/merges` | `selector`, `file_ids`, `options`를 받아 202와 작업 ID 반환 |
+| GET | `/merges/{merge_id}` | 상태·표·경고·계산 근거 |
+| POST | `/cases/{case_id}/exports` | 완료된 병합을 CSV로 변환하는 작업 접수 |
+| GET | `/exports/{export_id}` | 상태와 앞 20행 미리보기 |
+| GET | `/exports/{export_id}/download` | 준비된 CSV 첨부파일 다운로드 |
+
+내보내기 요청 예: `{"kind":"merge_raw","format":"csv","encoding":"utf-8","merge_id":"mg_..."}`.
+UTF-8은 Excel에서 확인하기 쉽도록 BOM을 넣고, cp949도 지원한다. `txt/xlsx`, 사진 ZIP과
+`photo_values`는 이 작업에 포함하지 않아 요청 시 400으로 알린다.
+
+원본과 작업 상태는 SQLite에 보존한다. 원본은 읽기 전용이며 실행 전에 SHA-256을 확인한다.
+Selector는 별도 프로세스에서 최대 10초 실행하고, 실패한 작업만 failed로 기록한다.
+기준기 `options.reference`의 파일 ID는 선택한 경로로 바꿔 모듈에 전달한다.
+실제 `ktl_selectors` 패키지가 필요하며, 라돈 요청에 가짜 결과를 대신 반환하지 않는다.
+
+서버는 성공한 SelectResult의 표를 그대로 내보낸다. 현재 사용자가 우선 확인하기로 한
+`radon_detail_v1`은 모델·시간·항목·값 등의 8열이며 파일마다 측정값 12행 뒤에 평균 1행을 붙인다.
+이는 RAW1~4 배치와 다르므로 모듈이 `DETAIL_LAYOUT` 경고와 `meta.pending`을 반환한다.
+가짜 Selector로 일반 경로·실패·재시작 동작을, 실제 모듈로 업로드→run→CSV 다운로드를 검증한다.
+원래 #13의 RAW1~4·지시오차·반복성 완료 기준은 별도로 남아 있다.
+
 ## 실행
 
 ```bash
