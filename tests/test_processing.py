@@ -178,25 +178,27 @@ def test_real_run_returns_timed_values_and_downloadable_csv(environment):
     assert response.status_code == 202, response.text
     result = client.get(f"{PREFIX}/merges/{response.json()['id']}").json()
     assert result["status"] == "done", result
-    assert result["meta"]["layout"] == "radon_detail_v1"
+    assert result["meta"]["layout"] == "radon_wide_v1"
     assert result["meta"]["reference_file_index"] == 1
-    assert len(result["table"]["rows"]) == 26
+    assert len(result["table"]["rows"]) == 13
+    assert len(result["table"]["columns"]) == 5
     assert [w["code"] for w in result["warnings"]] == ["DETAIL_LAYOUT"]
     exported = client.post(f"{PREFIX}/cases/{case_id}/exports", json={"kind": "merge_raw", "format": "csv", "encoding": "utf-8", "merge_id": result["id"]})
     assert exported.status_code == 202, exported.text
     export_id = exported.json()["id"]
     status = client.get(f"{PREFIX}/exports/{export_id}").json()
-    assert status["status"] == "done" and len(status["preview"]["rows"]) == 20
+    assert status["status"] == "done" and len(status["preview"]["rows"]) == 13
     downloaded = client.get(f"{PREFIX}/exports/{export_id}/download")
     assert downloaded.status_code == 200
     records = list(csv.DictReader(io.StringIO(downloaded.content.decode("utf-8-sig"))))
-    assert len(records) == 26
-    assert records[0]["항목"] == "CRM-1 Radon"
-    assert records[0]["측정시간"] == "2026-01-03 02:00:00" and float(records[0]["값"]) == 1
-    assert records[12]["구분"] == "평균" and float(records[12]["값"]) == 6.5
-    assert records[13]["모델명"] == "FRD500" and records[13]["S/N"] == "SYNTHETIC-TEMPERATURE"
-    assert records[13]["항목"] == "Temp" and float(records[13]["값"]) == 20
-    assert records[-1]["구분"] == "평균" and float(records[-1]["값"]) == 25.5
+    assert len(records) == 13
+    chamber, device = result["meta"]["sources"]
+    assert records[0][chamber["time_column"]] == "2026-01-03 02:00:00"
+    assert float(records[0][chamber["value_column"]]) == 1
+    assert records[12]["구분"] == "평균" and float(records[12][chamber["value_column"]]) == 6.5
+    assert device["model_name"] == "FRD500" and device["serial_number"] == "SYNTHETIC-TEMPERATURE"
+    assert device["value_column"].endswith("Temp") and float(records[0][device["value_column"]]) == 20
+    assert float(records[-1][device["value_column"]]) == 25.5
 
 
 def test_real_run_failure_is_recorded_without_stopping_api(environment):
